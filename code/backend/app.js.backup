@@ -1,0 +1,207 @@
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const morgan = require('morgan');
+const rateLimit = require('express-rate-limit');
+require('dotenv').config();
+
+const db = require('./config/database');
+
+// 导入路由
+const vesselsRouter = require('./routes/vessels');
+const anchoragesRouter = require('./routes/anchorages');
+const tripsRouter = require('./routes/trips');
+const dashboardRouter = require('./routes/dashboard');
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+// 安全中间�?app.use(helmet());
+
+// CORS配置
+app.use(cors({
+    origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true
+}));
+
+// 请求限制
+const limiter = rateLimit({
+    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15分钟
+    max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100, // 限制每个IP 15分钟内最多100个请求    message: {
+        success: false,
+        message: '请求过于频繁，请稍后再试'
+    }
+});
+
+app.use('/api/', limiter);
+
+// 日志中间�?if (process.env.NODE_ENV !== 'test') {
+    app.use(morgan('combined'));
+}
+
+// 解析JSON请求�?app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// API路由前缀
+const API_PREFIX = process.env.API_PREFIX || '/api/v1';
+
+// 健康检查端�?app.get('/health', async (req, res) => {
+    try {
+        const dbStatus = await db.testConnection();
+        res.json({
+            success: true,
+            status: 'healthy',
+            database: dbStatus ? 'connected' : 'disconnected',
+            timestamp: new Date().toISOString(),
+            uptime: process.uptime()
+        });
+    } catch (error) {
+        res.status(503).json({
+            success: false,
+            status: 'unhealthy',
+            database: 'disconnected',
+            error: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// API信息端点
+app.get('/api', (req, res) => {
+    res.json({
+        success: true,
+        message: '近海渔船航行及港口调度系�?API',
+        version: '1.0.0',
+        endpoints: {
+            vessels: `${API_PREFIX}/vessels`,
+            anchorages: `${API_PREFIX}/anchorages`,
+            trips: `${API_PREFIX}/trips`,
+            dashboard: `${API_PREFIX}/dashboard`,
+            health: '/health'
+        },
+        documentation: 'https://github.com/your-repo/vessel-system-api',
+        timestamp: new Date().toISOString()
+    });
+});
+
+// 注册API路由
+app.use(`${API_PREFIX}/vessels`, vesselsRouter);
+app.use(`${API_PREFIX}/anchorages`, anchoragesRouter);
+app.use(`${API_PREFIX}/trips`, tripsRouter);
+app.use(`${API_PREFIX}/dashboard`, dashboardRouter);
+
+// 404处理
+app.use('*', (req, res) => {
+    res.status(404).json({
+        success: false,
+        message: `端点 ${req.method} ${req.originalUrl} 不存在`,
+        available_endpoints: {
+            vessels: `${API_PREFIX}/vessels`,
+            anchorages: `${API_PREFIX}/anchorages`,
+            trips: `${API_PREFIX}/trips`,
+            dashboard: `${API_PREFIX}/dashboard`
+        }
+    });
+});
+
+// 全局错误处理中间�?app.use((error, req, res, next) => {
+    console.error('Global error handler:', error);
+
+    // 数据库连接错�?    if (error.code === 'ECONNREFUSED') {
+        return res.status(503).json({
+            success: false,
+            message: '数据库连接失败，请稍后再�?,
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+
+    // 语法错误
+    if (error instanceof SyntaxError) {
+        return res.status(400).json({
+            success: false,
+            message: '请求格式错误',
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+
+    // 默认错误响应
+    res.status(error.status || 500).json({
+        success: false,
+        message: error.message || '服务器内部错�?,
+        error: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+        timestamp: new Date().toISOString()
+    });
+});
+
+// 优雅关闭处理
+process.on('SIGTERM', async () => {
+    console.log('收到SIGTERM信号，开始优雅关�?..');
+    try {
+        await db.close();
+        process.exit(0);
+    } catch (error) {
+        console.error('关闭过程中出�?', error);
+        process.exit(1);
+    }
+});
+
+process.on('SIGINT', async () => {
+    console.log('收到SIGINT信号，开始优雅关�?..');
+    try {
+        await db.close();
+        process.exit(0);
+    } catch (error) {
+        console.error('关闭过程中出�?', error);
+        process.exit(1);
+    }
+});
+
+// 启动服务�?async function startServer() {
+    try {
+        // 测试数据库连�?        const dbConnected = await db.testConnection();
+        if (!dbConnected) {
+            console.error('数据库连接失败，服务器启动中�?);
+            process.exit(1);
+        }
+
+        const server = app.listen(PORT, () => {
+            console.log(`
+🚀 近海渔船航行及港口调度系�?API服务器已启动!
+
+📍 服务器地址: http://localhost:${PORT}
+🔗 API文档: http://localhost:${PORT}/api
+💚 健康检�? http://localhost:${PORT}/health
+📊 数据库状�? ${dbConnected ? '�?已连�? : '�?未连�?}
+🌍 环境: ${process.env.NODE_ENV || 'development'}
+
+可用的API端点:
+  - 船舶管理: ${API_PREFIX}/vessels
+  - 锚地管理: ${API_PREFIX}/anchorages
+  - 航次管理: ${API_PREFIX}/trips
+  - 仪表�? ${API_PREFIX}/dashboard
+            `);
+        });
+
+        // 处理端口已占用错�?        server.on('error', (error) => {
+            if (error.code === 'EADDRINUSE') {
+                console.error(`�?端口 ${PORT} 已被占用，请关闭占用该端口的进程后重试`);
+                process.exit(1);
+            } else {
+                console.error('启动服务器失�?', error);
+                process.exit(1);
+            }
+        });
+    } catch (error) {
+        console.error('启动服务器失�?', error);
+        process.exit(1);
+    }
+}
+
+// 仅在直接运行时启动服务器
+if (require.main === module) {
+    startServer();
+}
+
+module.exports = app;
